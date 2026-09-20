@@ -50,6 +50,12 @@ public class WebListener {
                     if (!(res.context().getCause() instanceof JsonSyntaxException)) {
                         throw res.context();
                     }
+                    // A malformed queue payload used to disappear here without a
+                    // trace, so an undelivered purchase looked exactly like an
+                    // empty queue. Say it out loud; the store operator is the
+                    // only one who can fix the shape.
+                    plugin.log("Could not parse the command queue, so nothing was delivered this round: "
+                            + res.context().getCause().getMessage());
                 }
             } else {
                 WebRequest<GsonReponse> request = new WebRequest.Builder<>(GsonReponse.class).path("servers/" + (ConfigKeys.WEBLISTENER_KEYS.ENABLED.getValue() ? ConfigKeys.WEBLISTENER_KEYS.KEY.getValue() + "/" : "") + "commands/queue").requiresApiKey(false).type(WebRequest.Type.GET).build();
