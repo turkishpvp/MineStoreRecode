@@ -213,7 +213,10 @@ public class MineStoreCommon {
             }
         }
         initialized = true;
-        Registries.MINESTORE_SCHEDULER.get().addTask(statsSender.mineStoreScheduledTask);
+        // Telemetry to api.chrommob.fun is not scheduled on this fork. It is not
+        // needed for the plugin to work and this network does not send its player
+        // counts to a third party. `StatSender` stays so the class can be built
+        // and the diff against upstream stays small.
         Registries.MINESTORE_SCHEDULER.get().addTask(guiData.mineStoreScheduledTask);
         Registries.MINESTORE_SCHEDULER.get().addTask(placeHolderData.mineStoreScheduledTask);
         Registries.MINESTORE_SCHEDULER.get().addTask(webListener.mineStoreScheduledTask);
@@ -366,8 +369,7 @@ public class MineStoreCommon {
     }
 
     private void stopFeatures() {
-        if (statsSender != null)
-            Registries.MINESTORE_SCHEDULER.get().removeTask(statsSender.mineStoreScheduledTask);
+        // Never added (see above), so there is nothing to remove.
         if (guiData != null)
             Registries.MINESTORE_SCHEDULER.get().removeTask(guiData.mineStoreScheduledTask);
         if (placeHolderData != null) {
@@ -484,7 +486,10 @@ public class MineStoreCommon {
         Registries.MINESTORE_SCHEDULER.get().addTask(webListener.mineStoreScheduledTask);
         Registries.MINESTORE_SCHEDULER.get().addTask(guiData.mineStoreScheduledTask);
         Registries.MINESTORE_SCHEDULER.get().addTask(placeHolderData.mineStoreScheduledTask);
-        Registries.MINESTORE_SCHEDULER.get().addTask(statsSender.mineStoreScheduledTask);
+        // Telemetry to api.chrommob.fun is not scheduled on this fork. It is not
+        // needed for the plugin to work and this network does not send its player
+        // counts to a third party. `StatSender` stays so the class can be built
+        // and the diff against upstream stays small.
         Registries.MINESTORE_SCHEDULER.get().addTask(authHolder.removeAndPost);
 
         Registries.MINESTORE_SCHEDULER.get().runDelayed(payNowManager.initTask);
