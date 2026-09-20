@@ -4,6 +4,14 @@ version: '${version}'
 main: me.chrommob.minestore.platforms.bukkit.MineStoreBukkitPlugin
 api-version: 1.13
 folia-supported: true
+# Tulpar: the Vault economy provider can be one of its MODULES, and Tulpar
+# loads those in its own enable. If MineStore starts first, Vault has no
+# provider yet, MineStore logs "No economy plugin is installed" and never
+# checks again, so virtual currency stays dead for that session. Measured on
+# a live server: the provider registered two seconds after MineStore.
+# softdepend rather than depend, because requiring Tulpar would stop
+# MineStore starting at all on servers that do not run it.
 softdepend:
   - Vault
   - PlaceholderAPI
+  - Tulpar
