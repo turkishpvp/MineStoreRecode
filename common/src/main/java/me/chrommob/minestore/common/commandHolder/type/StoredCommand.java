@@ -34,4 +34,9 @@ public class StoredCommand {
         StoredCommand that = (StoredCommand) o;
         return requestId == that.requestId && command.equals(that.command);
     }
+
+    @Override
+    public int hashCode() {
+        return 31 * requestId + command.hashCode();
+    }
 }

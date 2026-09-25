@@ -23,12 +23,14 @@ import me.chrommob.minestore.common.verification.VerificationResult;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class WebListener {
     private final MineStoreVersion arraySupportedSince = new MineStoreVersion(3, 2, 5);
     private final MineStoreCommon plugin;
     private boolean wasEmpty = false;
-    private final Set<String> toPostExecuted = new HashSet<>();
+    private final Set<String> toPostExecuted = ConcurrentHashMap.newKeySet();
+    private final DeliveryLedger ledger = new DeliveryLedger();
     public final MineStoreScheduledTask mineStoreScheduledTask;
 
     private List<ParsedResponse> fetchData() {
@@ -89,7 +91,7 @@ public class WebListener {
             return;
         }
         Set<String> toPostExecutedCopy = new HashSet<>(toPostExecuted);
-        toPostExecuted.clear();
+        toPostExecuted.removeAll(toPostExecutedCopy);
         if (MineStoreCommon.version().requires(arraySupportedSince)) {
             postExecutedAsync(toPostExecutedCopy);
             return;
@@ -111,6 +113,24 @@ public class WebListener {
                 return 9500;
             }
             Set<Integer> toPostDelivered = new HashSet<>();
+            List<ParsedResponse> fresh = new ArrayList<>();
+            for (ParsedResponse parsedResponse : parsedResponses) {
+                if (ledger.firstTime(parsedResponse.commandId())) {
+                    fresh.add(parsedResponse);
+                    continue;
+                }
+                // Handed out again because an earlier acknowledgement did not
+                // reach the store. It already ran (or is waiting for its player),
+                // so only acknowledge it again.
+                toPostDelivered.add(parsedResponse.commandId());
+                if (parsedResponse.type() == ParsedResponse.TYPE.COMMAND
+                        && parsedResponse.commandType() == ParsedResponse.COMMAND_TYPE.OFFLINE) {
+                    postExecuted(String.valueOf(parsedResponse.commandId()));
+                }
+                plugin.log("Command " + parsedResponse.commandId() + " for " + parsedResponse.username()
+                        + " was handed out again by the store; acknowledging it without running it twice.");
+            }
+            parsedResponses = fresh;
             List<ParsedResponse> commands = new ArrayList<>();
             for (ParsedResponse parsedResponse : parsedResponses) {
                 if (parsedResponse.type() != ParsedResponse.TYPE.COMMAND) {
@@ -193,13 +213,18 @@ public class WebListener {
         String json = jsonObject.toString();
         WebRequest<PostResponse> request = new WebRequest.Builder<>(PostResponse.class).path("servers/" + (ConfigKeys.WEBLISTENER_KEYS.ENABLED.getValue() ? ConfigKeys.WEBLISTENER_KEYS.KEY.getValue() + "/" : "") + "commands/delivered").type(WebRequest.Type.POST).strBody(json).build();
         Result<PostResponse, WebContext> res = plugin.apiHandler().request(request);
-        if (res.isError()) {
-            plugin.log("Failed to post delivered");
-            plugin.debug(this.getClass(), res.context());
+        if (res.isError() || res.value() == null) {
+            // The rows stay pending and come back on the next poll; the ledger
+            // makes sure they are acknowledged then instead of run again.
+            plugin.log("Failed to post delivered, the store will hand these out again: " + json);
+            if (res.isError()) {
+                plugin.debug(this.getClass(), res.context());
+            }
+            return;
         }
         PostResponse postResponse = res.value();
         if (postResponse.status) {
-            for (PostResponse.Result result : postResponse.results) {
+            for (PostResponse.Result result : postResponse.results == null ? new PostResponse.Result[0] : postResponse.results) {
                 if (result.status) {
                     continue;
                 }
@@ -207,7 +232,7 @@ public class WebListener {
             }
         } else {
             plugin.log("Failed to confirm the delivery of commands!");
-            plugin.log(postResponse.error);
+            plugin.log(postResponse.error != null ? postResponse.error : describe(postResponse));
             plugin.log(json);
         }
     }
@@ -231,13 +256,23 @@ public class WebListener {
         String json = jsonObject.toString();
         WebRequest<PostResponse> request = new WebRequest.Builder<>(PostResponse.class).path("servers/" + (ConfigKeys.WEBLISTENER_KEYS.ENABLED.getValue() ? ConfigKeys.WEBLISTENER_KEYS.KEY.getValue() + "/" : "") + "commands/executed").type(WebRequest.Type.POST).strBody(json).build();
         Result<PostResponse, WebContext> res = plugin.apiHandler().request(request);
-        if (res.isError()) {
-            plugin.log("Failed to post executed");
-            plugin.debug(this.getClass(), res.context());
+        if (res.isError() || res.value() == null) {
+            // Upstream dropped these ids here, so the commands stayed "pending"
+            // in the store forever and could be handed out again. Keep them for
+            // the next round unless the store answered with a client error.
+            boolean retry = !res.isError() || res.context().responseCode() <= 0 || res.context().responseCode() >= 500;
+            plugin.log("Failed to post executed" + (retry ? ", retrying next round: " : ": ") + json);
+            if (res.isError()) {
+                plugin.debug(this.getClass(), res.context());
+            }
+            if (retry) {
+                toPostExecuted.addAll(ids);
+            }
+            return;
         }
         PostResponse postResponse = res.value();
         if (postResponse.status) {
-            for (PostResponse.Result result : postResponse.results) {
+            for (PostResponse.Result result : postResponse.results == null ? new PostResponse.Result[0] : postResponse.results) {
                 if (result.status) {
                     continue;
                 }
@@ -245,7 +280,7 @@ public class WebListener {
             }
         } else {
             plugin.log("Failed to confirm the execution of commands!");
-            plugin.log(postResponse.error);
+            plugin.log(postResponse.error != null ? postResponse.error : describe(postResponse));
             plugin.log(json);
         }
     }
@@ -317,5 +352,19 @@ public class WebListener {
             }
             return res.value();
         });
+    }
+
+    private static String describe(PostResponse response) {
+        if (response.results == null) {
+            return "no details";
+        }
+        StringBuilder out = new StringBuilder();
+        for (PostResponse.Result result : response.results) {
+            if (out.length() > 0) {
+                out.append(", ");
+            }
+            out.append(result.id).append(": ").append(result.status ? "ok" : result.error);
+        }
+        return out.toString();
     }
 }

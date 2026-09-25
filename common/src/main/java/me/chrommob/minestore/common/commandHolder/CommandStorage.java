@@ -25,13 +25,24 @@ public class CommandStorage {
 
     private void remove(String username, String command) {
         plugin.debug(this.getClass(), "Removing " + command + " for " + username + " from command storage");
-        commands.get(username).remove(command);
+        List<String> stored = commands.get(username.toLowerCase());
+        if (stored == null) {
+            return;
+        }
+        stored.remove(command);
         plugin.commandDumper().update(commands);
     }
 
     private void removeNewCommand(StoredCommand storedCommand, String username) {
         plugin.debug(this.getClass(), "Removing " + storedCommand.command() + " for " + username + " from new command storage");
-        newCommands.get(username).remove(storedCommand);
+        List<StoredCommand> stored = newCommands.get(username.toLowerCase());
+        if (stored == null) {
+            return;
+        }
+        stored.remove(storedCommand);
+        if (stored.isEmpty()) {
+            newCommands.remove(username.toLowerCase());
+        }
         plugin.newCommandDumper().update(newCommands);
     }
 
@@ -140,33 +151,35 @@ public class CommandStorage {
                 toCheckIds.add(parsedResponse.commandId());
             }
             plugin.webListener().checkCommands(toCheckIds).thenAcceptAsync(checkResponses -> {
-                List<ParsedResponse> successful = new ArrayList<>();
-                if (!checkResponses.status()) {
-                    plugin.log("Failed to check commands: " + checkResponses.error());
+                if (!checkResponses.answered()) {
+                    // Nothing is known. Stored commands stay stored for the next
+                    // join; fresh ones were already acknowledged as delivered, so
+                    // they must be stored now or they are lost.
+                    plugin.log("Could not check commands with the store, they will run on the player's next join: " + checkResponses.error());
+                    if (newCommands) {
+                        for (ParsedResponse parsedResponse : parsedCommands) {
+                            addCommand(parsedResponse.username(), parsedResponse.command(), parsedResponse.commandId());
+                        }
+                    }
                     return;
                 }
-                Set<Integer> successIds = new HashSet<>();
-                Map<Integer, String> errors = new HashMap<>();
-                for (CheckResponse.CheckResponses checkResponse : checkResponses.results()) {
-                    if (!checkResponse.status()) {
-                        if (checkResponse.error() != null) {
-                            errors.put(checkResponse.cmd_id(), checkResponse.error());
-                        } else {
-                            errors.put(checkResponse.cmd_id(), "Unknown error");
-                        }
-                        continue;
-                    }
-                    successIds.add(checkResponse.cmd_id());
-                }
+                Set<Integer> successIds = checkResponses.validIds();
+                Map<Integer, String> errors = checkResponses.rejectedIds();
+                List<ParsedResponse> successful = new ArrayList<>();
                 for (ParsedResponse parsedResponse : parsedCommands) {
                     if (!successIds.contains(parsedResponse.commandId()) && errors.containsKey(parsedResponse.commandId())) {
-                        removeNewCommand(StoredCommand.fromParsedResponse(parsedResponse), parsedResponse.username());
-                        plugin.debug(this.getClass(), "Command " + parsedResponse.command() + " with id " + parsedResponse.commandId() + " failed to execute. Error: " + errors.get(parsedResponse.commandId()));
+                        if (!newCommands) {
+                            removeNewCommand(StoredCommand.fromParsedResponse(parsedResponse), parsedResponse.username());
+                        }
+                        plugin.log("Not running \"" + parsedResponse.command() + "\" (id " + parsedResponse.commandId() + "), the store no longer has it: " + errors.get(parsedResponse.commandId()));
                         continue;
                     }
                     successful.add(parsedResponse);
                 }
                 executeWithApiCheck(successful, newCommands);
+            }).exceptionally(e -> {
+                plugin.debug(this.getClass(), e);
+                return null;
             });
         } else {
             executeWithApiCheck(parsedCommands, newCommands);
