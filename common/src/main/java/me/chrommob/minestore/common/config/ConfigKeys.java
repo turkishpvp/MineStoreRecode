@@ -2,6 +2,7 @@ package me.chrommob.minestore.common.config;
 
 import me.chrommob.minestore.common.config.lang.cs_CZ;
 import me.chrommob.minestore.common.config.lang.en_US;
+import me.chrommob.minestore.common.config.lang.tr_TR;
 import me.chrommob.minestore.libs.me.chrommob.config.ConfigManager.ConfigKey;
 import me.chrommob.minestore.libs.me.chrommob.config.ConfigManager.ConfigWrapper;
 
@@ -53,11 +54,12 @@ public final class ConfigKeys {
     static {
         langMap.put("cs_CZ", new cs_CZ());
         langMap.put("en_US", new en_US());
+        langMap.put("tr_TR", new tr_TR());
         List<String> langComment = new ArrayList<>();
         langComment.add("Set the language that is used by the plugin.");
         langComment.add("Available languages: " + langMap.keySet() + " but you can create your own language file.");
         langComment.add("To create your own language file, just set language to whatever you want and the plugin will create template file for you in the lang folder.");
-        LANG = new ConfigKey<>("language", "en_US", langComment);
+        LANG = new ConfigKey<>("language", "tr_TR", langComment);
 
         List<String> storeUrlComment = new ArrayList<>();
         storeUrlComment.add("Set the store URL that is used by the plugin.");

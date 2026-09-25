@@ -64,7 +64,15 @@ public class en_US extends ConfigWrapper {
         subscriptionKeys.add(new ConfigKey<>("title", "<red><bold>Subscriptions:</red>"));
         subscriptionKeys.add(new ConfigKey<>("status", "<dark_green>%message%</dark_green>"));
         subscriptionKeys.add(new ConfigKey<>("url", "<click:open_url:%url%><yellow>%url%</yellow></click>"));
+        subscriptionKeys.add(new ConfigKey<>("note", "<white>%note%"));
+        subscriptionKeys.add(new ConfigKey<>("none", "<dark_red>You do not have an active subscription."));
+        subscriptionKeys.add(new ConfigKey<>("error", "<dark_red>The store could not be reached, try again later."));
         keys.add(new ConfigKey<>("subscription", subscriptionKeys));
+
+        List<ConfigKey<?>> paymentKeys = new ArrayList<>();
+        paymentKeys.add(new ConfigKey<>("success-message", "<green>You have successfully bought the item for %price%!"));
+        paymentKeys.add(new ConfigKey<>("failure-message", "<red>Failed to buy the item! You do not have enough money!"));
+        keys.add(new ConfigKey<>("payment", paymentKeys));
 
         return keys;
     }

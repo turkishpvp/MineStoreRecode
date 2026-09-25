@@ -2,6 +2,7 @@ package me.chrommob.minestore.common.config;
 
 import me.chrommob.minestore.common.config.lang.cs_CZ;
 import me.chrommob.minestore.common.config.lang.en_US;
+import me.chrommob.minestore.common.config.lang.tr_TR;
 import me.chrommob.minestore.libs.me.chrommob.config.ConfigManager.ConfigKey;
 import me.chrommob.minestore.libs.me.chrommob.config.ConfigManager.ConfigManager;
 import me.chrommob.minestore.libs.me.chrommob.config.ConfigManager.ConfigWrapper;
@@ -15,6 +16,7 @@ public class PluginConfig extends ConfigWrapper {
     static {
         langMap.put("cs_CZ", new cs_CZ());
         langMap.put("en_US", new en_US());
+        langMap.put("tr_TR", new tr_TR());
     }
 
 
@@ -100,6 +102,29 @@ public class PluginConfig extends ConfigWrapper {
         ConfigWrapper configWrapper = new en_US(lang);
         langConfigManager.addConfig(configWrapper);
         return configWrapper;
+    }
+
+    /**
+     * A language line by path, or an empty string when the key is missing.
+     *
+     * Language files that were written by an older build do not have the keys
+     * added since (for example {@code payment}), and the plain accessor throws a
+     * NullPointerException on them. A missing line should stay silent instead.
+     */
+    public String langString(String... path) {
+        try {
+            ConfigKey<?> key = getLang().getKey(path[0]);
+            for (int i = 1; i < path.length && key != null; i++) {
+                key = key.getKey(path[i]);
+            }
+            if (key == null) {
+                return "";
+            }
+            String value = key.getValueAsString();
+            return value == null ? "" : value;
+        } catch (RuntimeException e) {
+            return "";
+        }
     }
 
     public void saveConfig() {
