@@ -79,8 +79,7 @@ public class ChargeBalanceCommand {
                 .build();
         Result<Received, WebContext> res = plugin.apiHandler().request(request);
         // The balance is already gone at this point, so a store restart must
-        // not lose the answer. Retry transport errors and 5xx a few times; a
-        // 4xx is final and retrying it would not change the outcome.
+        // not lose the answer. Retry only while the store is unreachable.
         for (int attempt = 1; attempt < REPORT_ATTEMPTS && res.isError() && isRetryable(res.context()); attempt++) {
             try {
                 Thread.sleep(REPORT_RETRY_DELAY_MS);
@@ -105,9 +104,19 @@ public class ChargeBalanceCommand {
     private static final int REPORT_ATTEMPTS = 5;
     private static final long REPORT_RETRY_DELAY_MS = 3000;
 
+    /**
+     * Only failures where the store certainly did not process the request: it
+     * could not be reached, or the proxy in front of it said the app is down.
+     * The store's handler is not idempotent (a second accepted report runs the
+     * purchase again), so anything that might have reached PHP is not retried.
+     */
     private static boolean isRetryable(WebContext context) {
         int code = context.responseCode();
-        return code <= 0 || code >= 500;
+        if (code == 502 || code == 503 || code == 504) {
+            return true;
+        }
+        Throwable cause = context.getCause();
+        return code <= 0 && (cause instanceof java.net.ConnectException || cause instanceof java.net.UnknownHostException);
     }
 
     static class Received {
