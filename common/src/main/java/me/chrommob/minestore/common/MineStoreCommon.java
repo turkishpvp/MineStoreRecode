@@ -31,6 +31,7 @@ import me.chrommob.minestore.common.paynow.PayNowManager;
 import me.chrommob.minestore.common.placeholder.PlaceHolderData;
 import me.chrommob.minestore.common.playerInfo.LuckPermsPlayerInfoProvider;
 import me.chrommob.minestore.common.stats.StatSender;
+import me.chrommob.minestore.common.util.SecretRedactor;
 import me.chrommob.minestore.common.verification.VerificationManager;
 import me.chrommob.minestore.common.verification.VerificationResult;
 import me.chrommob.minestore.libs.me.chrommob.config.ConfigManager.ConfigManager;
@@ -76,6 +77,12 @@ public class MineStoreCommon {
     private StatSender statsSender;
     private BufferedWriter debugLogWriter;
     private File debugLogFile;
+    private volatile SecretRedactor redactor = new SecretRedactor(Collections.<String>emptyList());
+    private long debugLogBytes = 0;
+    /** debug.log is rolled over past this size; on the lobby it grew to 15 MB a day. */
+    private static final long DEBUG_LOG_MAX_BYTES = 8L * 1024 * 1024;
+    /** Rolled-over debug logs kept next to debug.log; older ones are deleted. */
+    private static final int DEBUG_LOG_BACKUPS_KEPT = 5;
     private final PaymentHandler paymentHandler = new PaymentHandler(this);
     private final Dumper dumper = new Dumper();
     private static MineStoreVersion version;
@@ -112,6 +119,7 @@ public class MineStoreCommon {
                 }
                 debugLogFile.delete();
             }
+            pruneDebugBackups(logFolder);
             try {
                 debugLogFile.createNewFile();
                 debugLogWriter = new BufferedWriter(new FileWriter(debugLogFile));
@@ -145,7 +153,28 @@ public class MineStoreCommon {
 
     private boolean initialized = false;
 
+    private void refreshRedactor() {
+        List<String> secrets = new ArrayList<>();
+        addSecret(secrets, ConfigKeys.API_KEYS.KEY.getValue());
+        addSecret(secrets, ConfigKeys.WEBLISTENER_KEYS.KEY.getValue());
+        addSecret(secrets, ConfigKeys.MYSQL_KEYS.PASSWORD.getValue());
+        redactor = new SecretRedactor(secrets);
+    }
+
+    private static void addSecret(List<String> secrets, String secret) {
+        if (secret == null) {
+            return;
+        }
+        secrets.add(secret);
+        try {
+            secrets.add(java.net.URLEncoder.encode(secret, "UTF-8"));
+        } catch (java.io.UnsupportedEncodingException ignored) {
+            // UTF-8 is always available.
+        }
+    }
+
     public void init(boolean reload) {
+        refreshRedactor();
         apiHandler = new ApiHandler(new AuthData(ConfigKeys.STORE_URL.getValue(), ConfigKeys.API_KEYS.ENABLED.getValue(), ConfigKeys.API_KEYS.KEY.getValue()));
         registerAddons();
         statsSender = new StatSender(this);
@@ -443,10 +472,13 @@ public class MineStoreCommon {
         for (MineStoreAddon addon : addons) {
             addonConfigs.get(addon).reloadConfig("config");
         }
-        apiHandler = new ApiHandler(new AuthData(ConfigKeys.STORE_URL.getValue(), ConfigKeys.API_KEYS.ENABLED.getValue(), ConfigKeys.API_KEYS.KEY.getValue()));
         new MineStoreReloadEvent().call();
         log("Reloading...");
         pluginConfig.reload();
+        // After the reload, not before: upstream built the client from the old
+        // values, so a changed key or URL only took effect on the next reload.
+        refreshRedactor();
+        apiHandler = new ApiHandler(new AuthData(ConfigKeys.STORE_URL.getValue(), ConfigKeys.API_KEYS.ENABLED.getValue(), ConfigKeys.API_KEYS.KEY.getValue()));
         version = MineStoreVersion.getMineStoreVersion();
         if (!initialized) {
             init(true);
@@ -581,8 +613,9 @@ public class MineStoreCommon {
     }
 
     public void log(String message) {
-        writeDebugLog(message + "\n");
-        Registries.LOGGER.get().log(message);
+        String safe = redactor.redact(message);
+        writeDebugLog(safe + "\n");
+        Registries.LOGGER.get().log(safe);
     }
 
     private int differentCharacters(String s1, String s2) {
@@ -619,13 +652,36 @@ public class MineStoreCommon {
         writeDebugLog(debugLog.toString());
     }
 
-    private void writeDebugLog(String message) {
+    private synchronized void writeDebugLog(String message) {
+        if (debugLogWriter == null) {
+            return;
+        }
         String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+        String line = time + ": " + redactor.redact(message);
         try {
-            debugLogWriter.write(time + ": " + message);
+            debugLogWriter.write(line);
             debugLogWriter.flush();
         } catch (IOException e) {
             e.printStackTrace();
+        }
+        debugLogBytes += line.length();
+        if (debugLogBytes > DEBUG_LOG_MAX_BYTES) {
+            debugLogBytes = 0;
+            resetDebugLog();
+        }
+    }
+
+    /** Deletes the oldest rolled-over debug logs so the folder stays bounded. */
+    private static void pruneDebugBackups(File logFolder) {
+        File[] backups = logFolder.listFiles((dir, name) -> name.startsWith("debug") && name.endsWith(".log") && !name.equals("debug.log"));
+        if (backups == null || backups.length <= DEBUG_LOG_BACKUPS_KEPT) {
+            return;
+        }
+        Arrays.sort(backups, Comparator.comparingLong(File::lastModified));
+        for (int i = 0; i < backups.length - DEBUG_LOG_BACKUPS_KEPT; i++) {
+            if (!backups[i].delete()) {
+                backups[i].deleteOnExit();
+            }
         }
     }
 
@@ -697,7 +753,14 @@ public class MineStoreCommon {
         return paymentHandler;
     }
 
-    private void resetDebugLog() {
+    private synchronized void resetDebugLog() {
+        if (debugLogWriter != null) {
+            try {
+                debugLogWriter.close();
+            } catch (IOException ignored) {
+            }
+            debugLogWriter = null;
+        }
         if (!Registries.CONFIG_FILE.get().getParentFile().exists()) {
             new File(Registries.CONFIG_FILE.get().getParentFile(), "lang").mkdirs();
         }
@@ -712,6 +775,7 @@ public class MineStoreCommon {
             }
             debugLogFile.delete();
         }
+        pruneDebugBackups(logFolder);
         try {
             debugLogFile.createNewFile();
             debugLogWriter = new BufferedWriter(new FileWriter(debugLogFile));
@@ -720,9 +784,11 @@ public class MineStoreCommon {
         }
     }
 
-    private String readDebugLog() {
+    private synchronized String readDebugLog() {
         try {
-            debugLogWriter.flush();
+            if (debugLogWriter != null) {
+                debugLogWriter.flush();
+            }
         } catch (IOException e) {
             e.printStackTrace();
         }
