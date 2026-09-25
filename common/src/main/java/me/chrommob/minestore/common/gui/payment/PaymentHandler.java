@@ -2,10 +2,8 @@ package me.chrommob.minestore.common.gui.payment;
 
 import me.chrommob.minestore.api.Registries;
 import me.chrommob.minestore.common.MineStoreCommon;
-import me.chrommob.minestore.common.commands.ChargeBalanceCommand;
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
-import net.kyori.adventure.text.format.TextDecoration;
+import me.chrommob.minestore.api.interfaces.commands.CommonConsoleUser;
+import me.chrommob.minestore.api.interfaces.user.CommonUser;
 
 import java.util.HashSet;
 import java.util.Map;
@@ -43,18 +41,28 @@ public class PaymentHandler {
         });
     }
 
-    public void handlePayment(ChargeBalanceCommand.ResponseData responseData) {
-        String username = responseData.data.username;
-        String paymentInternalId = responseData.data.payment_internal_id;
+    /**
+     * Tells the player how a virtual currency payment went.
+     *
+     * Upstream only spoke when the payment had been started from the in-game GUI.
+     * On this network Cevher purchases start on the website and finish here, while
+     * the player is online, so the player hears about both. An empty message in
+     * the language file keeps that line quiet.
+     */
+    public void handlePayment(String username, String price, String paymentInternalId, boolean success) {
         Set<String> orderIds = payments.get(username.toLowerCase());
-        if (orderIds == null || orderIds.isEmpty() || !orderIds.contains(paymentInternalId)) {
-            plugin.debug(this.getClass(), "Payment for " + username + " with id " + paymentInternalId + " was not made in-game");
+        if (orderIds != null) {
+            orderIds.remove(paymentInternalId);
+        }
+        CommonUser user = Registries.USER_GETTER.get().get(username).commonUser();
+        if (user instanceof CommonConsoleUser || !user.isOnline()) {
             return;
         }
-        if (responseData.status.equals("success")) {
-            Registries.USER_GETTER.get().get(username).commonUser().sendMessage(Component.text("You have successfully bought the item for " + responseData.data.price + "!").color(NamedTextColor.GREEN).decorate(TextDecoration.BOLD));
-        } else {
-            Registries.USER_GETTER.get().get(username).commonUser().sendMessage(Component.text("Failed to buy the item! You do not have enough money!").color(NamedTextColor.RED).decorate(TextDecoration.BOLD));
+        String key = success ? "success-message" : "failure-message";
+        String template = plugin.pluginConfig().langString("payment", key);
+        if (template.trim().isEmpty()) {
+            return;
         }
+        user.sendMessage(plugin.miniMessage().deserialize(template.replace("%price%", price)));
     }
 }
