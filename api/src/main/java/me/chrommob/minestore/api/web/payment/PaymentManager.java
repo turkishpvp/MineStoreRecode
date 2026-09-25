@@ -12,7 +12,8 @@ public class PaymentManager extends FeatureManager {
 
     public boolean markPaymentAsPaid(String paymentId, boolean executeCommands, String note) {
         ParamBuilder paramBuilder = new ParamBuilder();
-        paramBuilder.append("execute_commands", String.valueOf(executeCommands));
+        // Laravel's `boolean` rule takes 1/0, not the words true/false.
+        paramBuilder.append("execute_commands", executeCommands ? "1" : "0");
         paramBuilder.append("note", note);
         Result<Void, WebContext> result = request(new WebRequest.Builder<>(Void.class).path("payment/markAsPaid/" + paymentId).requiresApiKey(true).type(WebRequest.Type.POST).paramBuilder(paramBuilder).build());
         return !result.isError();

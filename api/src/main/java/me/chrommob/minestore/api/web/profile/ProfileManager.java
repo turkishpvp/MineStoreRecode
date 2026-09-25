@@ -36,8 +36,13 @@ public class ProfileManager extends FeatureManager {
         }
         fetching.add(username);
         Registries.MINESTORE_SCHEDULER.get().runDelayed(new MineStoreScheduledTask("profile/" + username, () -> {
-            Result<Profile, WebContext> result = request(new WebRequest.Builder<>(Profile.class).path("profile/" + username).requiresApiKey(true).build());
-            if (result.isError()) {
+            // The store serves profiles at /api/profile/{name}, without the
+            // key in the path; with it the request was a 404 every time.
+            Result<Profile, WebContext> result = request(new WebRequest.Builder<>(Profile.class).path("profile/" + username).requiresApiKey(false).build());
+            if (result.isError() || result.value() == null) {
+                // Unknown players come back as `[]`, which does not parse into a
+                // profile. Forget the attempt so a later call can try again.
+                fetching.remove(username);
                 return;
             }
             Profile profile = result.value();

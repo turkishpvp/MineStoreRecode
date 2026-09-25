@@ -73,7 +73,7 @@ public class GiftCardManager extends FeatureManager {
 
     public ValidateGiftCardResponse validateGiftCard(String code) {
         WebRequest<JsonObject> request = new WebRequest.Builder<>(JsonObject.class)
-                .requiresApiKey(true)
+                .requiresApiKey(false)
                 .type(WebRequest.Type.POST)
                 .path("cart/getGift")
                 .paramBuilder(new ParamBuilder()
