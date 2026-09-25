@@ -26,19 +26,42 @@ public class SubscriptionsCommand {
             return;
         }
         Registries.MINESTORE_SCHEDULER.get().runDelayed(new MineStoreScheduledTask("subscription", () -> {
-            ReturnSubscriptionObject returnSubscriptionObject = SubscriptionUtil.getSubscription(commonUser.getName());
-            if (returnSubscriptionObject == null) {
-                commonUser.sendMessage("[MineStore] The plugin is not successfully connected to the store! Contact the server owner!");
+            ReturnSubscriptionObject result = SubscriptionUtil.getSubscription(commonUser.getName());
+            if (result == null) {
+                send(commonUser, plugin.pluginConfig().langString("subscription", "error"));
                 return;
             }
-            commonUser.sendMessage(plugin.miniMessage().deserialize(plugin.pluginConfig().getLang().getKey("subscription").getKey("title").getValueAsString()));
-            commonUser.sendMessage(plugin.miniMessage().deserialize(plugin.pluginConfig().getLang().getKey("subscription").getKey("status").getValueAsString().replaceAll("%message%", returnSubscriptionObject.message())));
-            if (!returnSubscriptionObject.isSuccess()) {
+            // The store answers in English ("No payments found.", "User not
+            // found.", ...). Every unsuccessful answer means the same thing to
+            // the player, so it gets the language file's line instead.
+            if (!result.isSuccess() || result.urls() == null) {
+                send(commonUser, plugin.pluginConfig().langString("subscription", "none"));
                 return;
             }
-            for (String url : returnSubscriptionObject.urls()) {
-                commonUser.sendMessage(plugin.miniMessage().deserialize(plugin.pluginConfig().getLang().getKey("subscription").getKey("url").getValueAsString().replaceAll("%url%", url)));
+            send(commonUser, plugin.pluginConfig().langString("subscription", "title"));
+            String status = plugin.pluginConfig().langString("subscription", "status");
+            if (!status.isEmpty() && result.message() != null) {
+                send(commonUser, status.replace("%message%", result.message()));
+            }
+            for (String url : result.urls()) {
+                // Stripe answers null when the portal is off; other gateways
+                // answer a sentence, not a link.
+                if (url == null || url.trim().isEmpty()) {
+                    continue;
+                }
+                if (url.startsWith("https://") || url.startsWith("http://")) {
+                    send(commonUser, plugin.pluginConfig().langString("subscription", "url").replace("%url%", url));
+                } else {
+                    send(commonUser, plugin.pluginConfig().langString("subscription", "note").replace("%note%", url));
+                }
             }
         }, 0));
+    }
+
+    private void send(CommonUser user, String miniMessage) {
+        if (miniMessage == null || miniMessage.isEmpty()) {
+            return;
+        }
+        user.sendMessage(plugin.miniMessage().deserialize(miniMessage));
     }
 }
