@@ -22,6 +22,9 @@ public class CommandExecuterBukkit extends CommandExecuterCommon {
 
     @Override
     public boolean isOnline(String username) {
-        return plugin.getServer().getPlayer(username) != null;
+        // Exact match. getPlayer(String) matches by prefix, so "Ali" counted as
+        // online while only "Ali123" was, and an online-only command ran for a
+        // player who was not there.
+        return plugin.getServer().getPlayerExact(username) != null;
     }
 }

@@ -44,7 +44,9 @@ public class BukkitUserGetter implements UserGetter {
 
     @Override
     public AbstractUser get(String username) {
-        Player player = mineStoreBukkit.getServer().getPlayer(username);
+        // Exact match: a prefix match would charge a virtual currency payment
+        // to whichever online player's name starts with the buyer's.
+        Player player = mineStoreBukkit.getServer().getPlayerExact(username);
         return get(player);
     }
 
