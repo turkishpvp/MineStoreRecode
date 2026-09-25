@@ -72,7 +72,7 @@ public class WebRequest<T> {
             return this;
         }
         public Builder<T> strBody(String body) {
-            this.body = body.getBytes();
+            this.body = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
             return this;
         }
         public WebRequest<T> build() {

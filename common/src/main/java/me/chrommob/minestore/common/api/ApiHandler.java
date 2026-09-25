@@ -11,6 +11,7 @@ import me.chrommob.minestore.api.web.WebRequest;
 import javax.net.ssl.HttpsURLConnection;
 import java.io.*;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
 
@@ -38,6 +39,14 @@ public class ApiHandler {
             urlConnection = (HttpsURLConnection) url.openConnection();
             urlConnection.setRequestMethod(request.getType().name().toUpperCase());
             urlConnection.setRequestProperty("Content-Type", "application/json");
+            // Laravel answers a failed FormRequest with a 302 back to the
+            // referrer unless the client says it wants JSON. The connection
+            // then followed that redirect to the storefront, got a 200 HTML
+            // page and reported a parse error instead of the 422 that says
+            // which field was wrong. Ask for JSON and never follow redirects:
+            // no endpoint this plugin calls answers with one on success.
+            urlConnection.setRequestProperty("Accept", "application/json");
+            urlConnection.setInstanceFollowRedirects(false);
             for (Map.Entry<String, String> header : request.getHeaders().entrySet()) {
                 urlConnection.setRequestProperty(header.getKey(), header.getValue());
             }
@@ -51,7 +60,7 @@ public class ApiHandler {
             if (responseCode / 100 != 2) {
                 boolean isCloudflare = urlConnection.getHeaderField("cf-cache-status") == null && "cloudflare".equalsIgnoreCase(urlConnection.getHeaderField("server"));
                 if (urlConnection.getErrorStream() != null) {
-                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(urlConnection.getErrorStream()))) {
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(urlConnection.getErrorStream(), StandardCharsets.UTF_8))) {
                         StringBuilder responseString = new StringBuilder();
                         String line;
                         while ((line = reader.readLine()) != null) {
@@ -67,7 +76,7 @@ public class ApiHandler {
             if ("gzip".equals(urlConnection.getContentEncoding())) {
                 is = new GZIPInputStream(is);
             }
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(is))) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
                 StringBuilder responseString = new StringBuilder();
                 String line;
                 while ((line = reader.readLine()) != null) {
