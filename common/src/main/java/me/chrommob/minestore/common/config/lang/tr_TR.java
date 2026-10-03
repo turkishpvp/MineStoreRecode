@@ -8,12 +8,12 @@ import java.util.List;
 
 /**
  * TurkishPvP arayüz dili (brand/arayuz-dili.md): sohbet mesajı
- * {@code &8 ┃ &6&lMAĞAZA &8┃ } ile başlar, gövde beyaz, hata tamamen kırmızı,
+ * {@code &6&lMAĞAZA } etiketiyle başlar (eski {@code &8 ┃ … &8┃} öneki 30 Eylül 2026'da kalktı), gövde beyaz, hata tamamen kırmızı,
  * tıklanabilir metin sarı ve parantezli. Menü başlıkları düz metin.
  * Metinler MiniMessage biçiminde.
  */
 public class tr_TR extends ConfigWrapper {
-    static final String PREFIX = "<dark_gray> ┃ <gold><bold>MAĞAZA</bold> <dark_gray>┃ ";
+    static final String PREFIX = "<gold><bold>MAĞAZA</bold> ";
 
     public tr_TR() {
         super("tr_TR", getKeys());
