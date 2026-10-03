@@ -1,10 +1,7 @@
 package me.chrommob.minestore.common.commands;
 
 import com.google.gson.annotations.SerializedName;
-import me.chrommob.minestore.api.Registries;
-import me.chrommob.minestore.api.interfaces.commands.CommonConsoleUser;
 import me.chrommob.minestore.api.interfaces.user.AbstractUser;
-import me.chrommob.minestore.api.interfaces.user.CommonUser;
 import me.chrommob.minestore.api.web.Result;
 import me.chrommob.minestore.api.web.WebContext;
 import me.chrommob.minestore.api.web.WebRequest;
@@ -15,8 +12,8 @@ import org.incendo.cloud.annotations.Command;
 import org.incendo.cloud.annotations.Permission;
 
 /**
- * Takes a virtual currency (Cevher) payment from the player's Vault balance and
- * tells the store the result.
+ * Takes a virtual currency (Cevher) payment from the player's balance and tells the
+ * store the result.
  *
  * Upstream could not complete a single payment against this store: it posted to
  * {@code /api/{key}/payment/handle/} (404 here, the route is
@@ -25,6 +22,11 @@ import org.incendo.cloud.annotations.Permission;
  * {@code Accept} header Laravel answered the failed validation with a redirect.
  * It also took the money before noticing a bad signature, and looked the player
  * up by name prefix. See {@link VirtualCurrencyPayment}.
+ *
+ * TurkishPvP: the player does NOT have to be online. Upstream charged through Vault
+ * with the online {@code Player} and failed the payment otherwise; Cevher now charges
+ * by UUID in its database, at most once per payment, and the store is told at most
+ * once (see {@link VirtualCurrencyCharge}).
  */
 @SuppressWarnings("unused")
 public class ChargeBalanceCommand {
@@ -51,26 +53,18 @@ public class ChargeBalanceCommand {
             return;
         }
 
-        CommonUser player = Registries.USER_GETTER.get().get(username).commonUser();
-        String status;
-        double remaining;
-        if (player instanceof CommonConsoleUser || !player.isOnline()) {
-            // The store queues this as "player must be online", but the player
-            // can leave between delivery and execution. Report a failure so the
-            // payment does not sit in "processing" forever.
-            status = VirtualCurrencyPayment.STATUS_FAILURE;
-            remaining = 0;
-        } else if (player.takeMoney(Double.parseDouble(amount))) {
-            status = VirtualCurrencyPayment.STATUS_SUCCESS;
-            remaining = player.getBalance();
-        } else {
-            status = VirtualCurrencyPayment.STATUS_FAILURE;
-            remaining = player.getBalance();
-        }
+        VirtualCurrencyCharge.Settlement settlement = VirtualCurrencyCharge.run(plugin.cevherCharge(), paymentInternalId, username, amount,
+                (success, remaining) -> report(secretKey, expected, username, amount, paymentInternalId, success, remaining),
+                success -> plugin.paymentHandler().handlePayment(username, amount, paymentInternalId, success),
+                () -> plugin.commandStorage().confirmCharge(paymentInternalId),
+                plugin::log);
+        plugin.debug(this.getClass(), "Virtual currency payment " + paymentInternalId + ": " + settlement);
+    }
 
-        plugin.paymentHandler().handlePayment(username, amount, paymentInternalId, VirtualCurrencyPayment.STATUS_SUCCESS.equals(status));
-
-        String body = VirtualCurrencyPayment.body(status, username, amount, paymentInternalId, remaining, expected);
+    private VirtualCurrencyCharge.Delivery report(String secretKey, String signature, String username, String amount,
+                                                  String paymentInternalId, boolean success, double remaining) {
+        String status = success ? VirtualCurrencyPayment.STATUS_SUCCESS : VirtualCurrencyPayment.STATUS_FAILURE;
+        String body = VirtualCurrencyPayment.body(status, username, amount, paymentInternalId, remaining, signature);
         WebRequest<Received> request = new WebRequest.Builder<>(Received.class)
                 .path(VirtualCurrencyPayment.handlerPath(secretKey))
                 .requiresApiKey(false)
@@ -78,8 +72,7 @@ public class ChargeBalanceCommand {
                 .strBody(body)
                 .build();
         Result<Received, WebContext> res = plugin.apiHandler().request(request);
-        // The balance is already gone at this point, so a store restart must
-        // not lose the answer. Retry only while the store is unreachable.
+        // Retry only while the store is certainly unreachable: its handler is not idempotent.
         for (int attempt = 1; attempt < REPORT_ATTEMPTS && res.isError() && isRetryable(res.context()); attempt++) {
             try {
                 Thread.sleep(REPORT_RETRY_DELAY_MS);
@@ -89,16 +82,23 @@ public class ChargeBalanceCommand {
             }
             res = plugin.apiHandler().request(request);
         }
-        if (res.isError()) {
-            plugin.log("Could not report virtual currency payment " + paymentInternalId + " for " + username + " to the store (" + status + ").");
-            plugin.debug(this.getClass(), res.context());
-            return;
+        if (!res.isError()) {
+            Received received = res.value();
+            if (received == null || !received.success) {
+                plugin.log("The store rejected virtual currency payment " + paymentInternalId + " for " + username + " (" + status + "): "
+                        + (received == null ? "empty answer" : received.message));
+            }
+            return VirtualCurrencyCharge.Delivery.REACHED;
         }
-        Received received = res.value();
-        if (received == null || !received.success) {
-            plugin.log("The store rejected virtual currency payment " + paymentInternalId + " for " + username + ": "
-                    + (received == null ? "empty answer" : received.message));
+        plugin.debug(this.getClass(), res.context());
+        int code = res.context().responseCode();
+        if (isRetryable(res.context()) || (code >= 400 && code < 500)) {
+            // Unreachable, or the store refused before deciding anything: safe to send again later.
+            plugin.log("Could not report virtual currency payment " + paymentInternalId + " for " + username
+                    + " to the store (" + status + ", HTTP " + code + "), it will be sent again later.");
+            return VirtualCurrencyCharge.Delivery.NOT_REACHED;
         }
+        return VirtualCurrencyCharge.Delivery.UNKNOWN;
     }
 
     private static final int REPORT_ATTEMPTS = 5;
@@ -107,8 +107,6 @@ public class ChargeBalanceCommand {
     /**
      * Only failures where the store certainly did not process the request: it
      * could not be reached, or the proxy in front of it said the app is down.
-     * The store's handler is not idempotent (a second accepted report runs the
-     * purchase again), so anything that might have reached PHP is not retried.
      */
     private static boolean isRetryable(WebContext context) {
         int code = context.responseCode();

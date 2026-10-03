@@ -119,23 +119,22 @@ public class CommandStorage {
      *         them as executed, that happens when Cevher confirms them
      */
     public Set<Integer> listener(List<ParsedResponse> commands) {
-        List<ParsedResponse> onlineCommands = new ArrayList<>();
         Set<Integer> networkIds = new HashSet<>();
         for (ParsedResponse command : commands) {
             if (NetworkDeliveries.accepts(command)) {
-                // Network-wide, whatever the "player must be online" flag says: the
-                // player does not have to be on this server (see NetworkDeliveries).
+                // Network-wide (see NetworkDeliveries): Cevher applies it wherever the
+                // player is, online or not, and confirms it.
                 networkIds.add(command.commandId());
                 network.submit(command);
                 continue;
             }
-            if (command.commandType() == ParsedResponse.COMMAND_TYPE.ONLINE) {
-                onlineCommands.add(command);
-                continue;
-            }
+            // TurkishPvP: the store's "player must be online" flag is ignored. Every
+            // command runs as soon as it arrives, the player does not have to be on
+            // this server or online at all (owner's decision, 3 Oct 2026). Upstream
+            // parked these in savedCommands.json until the player joined THIS server,
+            // which with lobby load balancing meant many purchases never ran.
             execute(command);
         }
-        handleOnlineCommands(onlineCommands);
         return networkIds;
     }
 
@@ -151,13 +150,20 @@ public class CommandStorage {
         network.confirm(id);
     }
 
+    /** The store has the result of this Cevher payment: confirm its queued copies. */
+    public void confirmCharge(String paymentId) {
+        if (network != null) {
+            network.confirmCharge(paymentId);
+        }
+    }
+
     /**
      * Called on every queue poll: re-runs unconfirmed network deliveries and, once,
      * moves Cevher commands that an older build parked in savedCommands.json for
      * "when the player joins this server" over to the network path.
      */
     public void networkTick() {
-        if (network == null || !NetworkDeliveries.protocolAvailable()) {
+        if (network == null) {
             return;
         }
         if (!savedMigrated) {
@@ -172,13 +178,24 @@ public class CommandStorage {
             return;
         }
         List<ParsedResponse> parked = new ArrayList<>();
+        List<ParsedResponse> others = new ArrayList<>();
         for (Map.Entry<String, List<StoredCommand>> entry : newCommands.entrySet()) {
             for (StoredCommand stored : entry.getValue()) {
                 ParsedResponse response = stored.toParsedResponse(entry.getKey());
                 if (NetworkDeliveries.accepts(response)) {
                     parked.add(response);
+                } else if (!NetworkDeliveries.handles(response.command())) {
+                    // Parked by an older build for "when the player joins". The
+                    // online requirement is gone: run it now (after the same store
+                    // check the join path does), then report it executed.
+                    others.add(response);
                 }
+                // A Cevher command whose protocol is not up stays parked for later.
             }
+        }
+        if (!others.isEmpty()) {
+            plugin.log("Running " + others.size() + " stored commands that were waiting for their player.");
+            executeWithOnlineCheck(others, false);
         }
         if (parked.isEmpty()) {
             return;
@@ -211,24 +228,6 @@ public class CommandStorage {
             savedMigrated = false;
             return null;
         });
-    }
-
-    /**
-     * Filters the given list of commands, if they are offline, they will be added to the new command storage.
-     * If they are online, they will be passed to {@link #executeWithOnlineCheck(List, boolean)} for further processing.
-     *
-     * @param parsedCommands The commands to filter.
-     */
-    private void handleOnlineCommands(List<ParsedResponse> parsedCommands) {
-        List<ParsedResponse> online = new ArrayList<>();
-        for (ParsedResponse parsedResponse : parsedCommands) {
-            if (Registries.COMMAND_EXECUTER.get().isOnline(parsedResponse.username())) {
-                online.add(parsedResponse);
-                continue;
-            }
-            addCommand(parsedResponse.username(), parsedResponse.command(), parsedResponse.commandId());
-        }
-        executeWithOnlineCheck(online, true);
     }
 
     private void executeWithOnlineCheck(List<ParsedResponse> parsedCommands, boolean newCommands) {
@@ -321,7 +320,7 @@ public class CommandStorage {
         String command = parsedResponse.command();
         String username = parsedResponse.username();
         int requestId = parsedResponse.commandId();
-        if (requestId > 0 && NetworkDeliveries.handles(command) && NetworkDeliveries.protocolAvailable()) {
+        if (requestId > 0 && NetworkDeliveries.needsKey(command) && NetworkDeliveries.protocolAvailable()) {
             // Every path (network, legacy join path, parked copies) carries the key,
             // so Cevher applies a purchase at most once whichever path runs it.
             command = NetworkDeliveries.withKey(command, requestId);

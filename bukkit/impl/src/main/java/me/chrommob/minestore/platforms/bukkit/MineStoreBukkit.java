@@ -126,6 +126,8 @@ public final class MineStoreBukkit implements MineStorePlugin {
             if (vaultEconomyProvider.isInstalled()) {
                 Registries.PLAYER_ECONOMY_PROVIDER.set(vaultEconomyProvider);
             }
+            // TurkishPvP: website Cevher payments are charged through Cevher, online or not.
+            common.cevherCharge(new me.chrommob.minestore.platforms.bukkit.db.CevherChargeBukkit(plugin, common));
         }
         if (plugin.getServer().getPluginManager().getPlugin("PlaceholderAPI") != null) {
             Registries.PLACE_HOLDER_PROVIDER.set(new BukkitPlaceHolderProvider(common));

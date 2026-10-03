@@ -120,7 +120,7 @@ public class WebListener {
             for (ParsedResponse parsedResponse : parsedResponses) {
                 if (parsedResponse.type() == ParsedResponse.TYPE.COMMAND && parsedResponse.commandId() > 0
                         && NetworkDeliveries.handles(parsedResponse.command())
-                        && !NetworkDeliveries.protocolAvailable()) {
+                        && !NetworkDeliveries.available(parsedResponse.command())) {
                     // Cevher is not up (startup, reload) or is too old to take a delivery
                     // key. Do not touch the row at all: no "delivered", no run. The store
                     // hands it out again on the next poll.
@@ -144,16 +144,17 @@ public class WebListener {
                     }
                     continue;
                 }
-                if (parsedResponse.type() == ParsedResponse.TYPE.COMMAND
-                        && parsedResponse.commandType() == ParsedResponse.COMMAND_TYPE.OFFLINE) {
+                if (parsedResponse.type() == ParsedResponse.TYPE.COMMAND) {
+                    // Every command runs on arrival now (no online requirement), so a
+                    // re-handed one already ran.
                     postExecuted(String.valueOf(parsedResponse.commandId()));
                 }
                 plugin.log("Command " + parsedResponse.commandId() + " for " + parsedResponse.username()
                         + " was handed out again by the store; acknowledging it without running it twice.");
             }
             if (held) {
-                plugin.log("Cevher store commands are waiting: Cevher is not ready to take delivery keys yet (system property "
-                        + NetworkDeliveries.PROTOCOL_PROPERTY + " is not set).");
+                plugin.log("Cevher store commands are waiting: Cevher is not ready to take them yet (system property "
+                        + NetworkDeliveries.PROTOCOL_PROPERTY + " / " + NetworkDeliveries.CHARGE_PROPERTY + " is not set).");
             }
             parsedResponses = fresh;
             List<ParsedResponse> commands = new ArrayList<>();
@@ -163,8 +164,9 @@ public class WebListener {
                 }
                 MineStorePurchaseEvent event = new MineStorePurchaseEvent(parsedResponse.username(), parsedResponse.command(), parsedResponse.commandId(), parsedResponse.commandType() == ParsedResponse.COMMAND_TYPE.ONLINE ? MineStoreEvent.COMMAND_TYPE.ONLINE : MineStoreEvent.COMMAND_TYPE.OFFLINE);
                 event.call();
-                ParsedResponse.COMMAND_TYPE commandType = event.commandType() == MineStoreEvent.COMMAND_TYPE.ONLINE ? ParsedResponse.COMMAND_TYPE.ONLINE : ParsedResponse.COMMAND_TYPE.OFFLINE;
-                commands.add(new ParsedResponse(ParsedResponse.TYPE.COMMAND, commandType, event.command(), event.username(), event.id()));
+                // The "player must be online" flag is ignored: every command runs now
+                // (see CommandStorage#listener).
+                commands.add(new ParsedResponse(ParsedResponse.TYPE.COMMAND, ParsedResponse.COMMAND_TYPE.OFFLINE, event.command(), event.username(), event.id()));
                 plugin.debug(this.getClass(), "Got command: " + "\"" + parsedResponse.command() + "\""
                         + " with id: " + parsedResponse.commandId() + " for player: "
                         + parsedResponse.username() + " requires online: "
@@ -186,7 +188,7 @@ public class WebListener {
                     if (!MineStoreCommon.version().requires(arraySupportedSince)) {
                         postDelivered(String.valueOf(parsedResponse.commandId()));
                     }
-                    if (parsedResponse.commandType() == ParsedResponse.COMMAND_TYPE.OFFLINE
+                    if (parsedResponse.type() == ParsedResponse.TYPE.COMMAND
                             && !awaitingConfirmation.contains(parsedResponse.commandId())) {
                         postExecuted(String.valueOf(parsedResponse.commandId()));
                     }

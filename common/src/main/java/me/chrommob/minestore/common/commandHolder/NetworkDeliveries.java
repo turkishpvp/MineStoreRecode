@@ -50,17 +50,29 @@ import java.util.function.LongSupplier;
  *       comes back after the restart instead of being lost.</li>
  * </ul>
  *
+ * <p>Website Cevher payments ({@code ms chargeBalance <user> <amount> <payment_id> <sig>})
+ * go through here as well. The store always queues them as "player must be
+ * online", but Cevher charges the balance by UUID in its database, so the player
+ * does not have to be anywhere. The command is not keyed: Cevher keys the charge on
+ * the payment id ({@code pay-<payment_id>}), which also covers the store queueing
+ * the same payment once per cart item. {@code ChargeBalanceCommand} confirms it
+ * ({@link #confirmCharge}) once the store has been told the result.
+ *
  * <p>Gate: all of this happens only while Cevher advertises the protocol in
- * the {@link #PROTOCOL_PROPERTY} system property. An older Cevher that does not
- * know the key must never receive retries, so without the property every
- * command takes the upstream path unchanged.
+ * the {@link #PROTOCOL_PROPERTY} system property ({@link #CHARGE_PROPERTY} for
+ * payments). An older Cevher that does not know the key must never receive
+ * retries; without the property the command is held in the store's queue.
  */
 public final class NetworkDeliveries {
     public static final String PROTOCOL_PROPERTY = "turkishpvp.cevher.delivery";
     public static final String PROTOCOL_VERSION = "1";
     public static final String PLACEHOLDER = "{command_id}";
+    public static final String CHARGE_PROPERTY = "turkishpvp.cevher.charge";
+    public static final String CHARGE_VERSION = "1";
 
     private static final String ROOT = "cevher";
+    private static final Set<String> MINESTORE_ROOTS = new HashSet<>(Arrays.asList("ms", "minestore"));
+    private static final String CHARGE = "chargebalance";
     private static final Set<String> SUBCOMMANDS = new HashSet<>(Arrays.asList("ver", "al", "sure", "chargeback"));
 
     static final long FIRST_RETRY_MILLIS = 30_000L;
@@ -122,23 +134,59 @@ public final class NetworkDeliveries {
         return PROTOCOL_VERSION.equals(System.getProperty(PROTOCOL_PROPERTY));
     }
 
-    /** {@code cevher ver|al|sure|chargeback ...}, with or without a leading slash. */
-    public static boolean handles(String command) {
-        if (command == null) {
-            return false;
+    public static boolean chargeProtocolAvailable() {
+        return CHARGE_VERSION.equals(System.getProperty(CHARGE_PROPERTY));
+    }
+
+    /** Whether Cevher can take this command now (it is one of ours and its protocol is advertised). */
+    public static boolean available(String command) {
+        if (isCharge(command)) {
+            return chargeProtocolAvailable();
         }
-        String[] parts = command.trim().split("\\s+");
+        return needsKey(command) && protocolAvailable();
+    }
+
+    /** Cevher store deliveries and website Cevher payments. */
+    public static boolean handles(String command) {
+        return needsKey(command) || isCharge(command);
+    }
+
+    /** {@code cevher ver|al|sure|chargeback ...}, with or without a leading slash: these carry {@code ms-<id>}. */
+    public static boolean needsKey(String command) {
+        String[] parts = words(command);
         if (parts.length < 2) {
             return false;
         }
-        String root = parts[0].startsWith("/") ? parts[0].substring(1) : parts[0];
-        return ROOT.equalsIgnoreCase(root) && SUBCOMMANDS.contains(parts[1].toLowerCase(Locale.ROOT));
+        return ROOT.equalsIgnoreCase(parts[0]) && SUBCOMMANDS.contains(parts[1].toLowerCase(Locale.ROOT));
+    }
+
+    /** {@code ms|minestore chargeBalance <user> <amount> <payment_id> <signature>}. */
+    public static boolean isCharge(String command) {
+        String[] parts = words(command);
+        return parts.length == 6 && MINESTORE_ROOTS.contains(parts[0].toLowerCase(Locale.ROOT))
+                && CHARGE.equals(parts[1].toLowerCase(Locale.ROOT));
+    }
+
+    /** The payment id of a {@link #isCharge} command, else null. */
+    public static String chargePaymentId(String command) {
+        return isCharge(command) ? words(command)[4] : null;
+    }
+
+    private static String[] words(String command) {
+        if (command == null || command.trim().isEmpty()) {
+            return new String[0];
+        }
+        String[] parts = command.trim().split("\\s+");
+        if (parts[0].startsWith("/")) {
+            parts[0] = parts[0].substring(1);
+        }
+        return parts;
     }
 
     /** Whether this response goes through here rather than the upstream path. */
     public static boolean accepts(ParsedResponse response) {
         return response.type() == ParsedResponse.TYPE.COMMAND && response.commandId() > 0
-                && handles(response.command()) && protocolAvailable();
+                && available(response.command());
     }
 
     /**
@@ -186,6 +234,27 @@ public final class NetworkDeliveries {
         ackExecuted.accept(id);
     }
 
+    /**
+     * The store has been told the result of this payment (or it was settled earlier):
+     * confirm every queued copy of it. The store queues one copy per cart item.
+     */
+    public void confirmCharge(String paymentId) {
+        if (paymentId == null) {
+            return;
+        }
+        List<Integer> ids = new ArrayList<>();
+        synchronized (this) {
+            for (Pending entry : pending.values()) {
+                if (paymentId.equals(chargePaymentId(entry.command))) {
+                    ids.add(entry.id);
+                }
+            }
+        }
+        for (int id : ids) {
+            confirm(id);
+        }
+    }
+
     public synchronized boolean isPending(int id) {
         return pending.containsKey(id);
     }
@@ -196,15 +265,12 @@ public final class NetworkDeliveries {
 
     /** Re-runs what is due. Called from the queue poll, roughly every ten seconds. */
     public void retryDue() {
-        if (!protocolAvailable()) {
-            // Cevher is down or reloading: an older module might come back, so wait.
-            return;
-        }
         List<Pending> due = new ArrayList<>();
         long now = clock.getAsLong();
         synchronized (this) {
             for (Pending entry : pending.values()) {
-                if (entry.nextAttemptAt <= now) {
+                // Cevher down or reloading: an older module might come back, so wait.
+                if (entry.nextAttemptAt <= now && available(entry.command)) {
                     scheduleNext(entry);
                     due.add(entry);
                 }

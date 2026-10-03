@@ -754,6 +754,17 @@ public class MineStoreCommon {
         return paymentHandler;
     }
 
+    /** TurkishPvP: Cevher's offline charge for website Cevher payments; null on platforms without it. */
+    private volatile me.chrommob.minestore.common.commands.CevherCharge cevherCharge;
+
+    public me.chrommob.minestore.common.commands.CevherCharge cevherCharge() {
+        return cevherCharge;
+    }
+
+    public void cevherCharge(me.chrommob.minestore.common.commands.CevherCharge cevherCharge) {
+        this.cevherCharge = cevherCharge;
+    }
+
     private synchronized void resetDebugLog() {
         if (debugLogWriter != null) {
             try {
