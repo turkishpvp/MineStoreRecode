@@ -11,6 +11,7 @@ import me.chrommob.minestore.common.commandHolder.type.CheckResponse;
 import me.chrommob.minestore.common.commandHolder.type.StoredCommand;
 import me.chrommob.minestore.common.config.ConfigKeys;
 
+import java.io.File;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
@@ -22,6 +23,8 @@ public class CommandStorage {
     }
     private Map<String, List<String>> commands;
     private Map<String, List<StoredCommand>> newCommands;
+    private NetworkDeliveries network;
+    private volatile boolean savedMigrated = false;
 
     private void remove(String username, String command) {
         plugin.debug(this.getClass(), "Removing " + command + " for " + username + " from command storage");
@@ -111,9 +114,21 @@ public class CommandStorage {
         return parsedResponses;
     }
 
-    public void listener(List<ParsedResponse> commands) {
+    /**
+     * @return ids handed to {@link NetworkDeliveries}: the caller must not report
+     *         them as executed, that happens when Cevher confirms them
+     */
+    public Set<Integer> listener(List<ParsedResponse> commands) {
         List<ParsedResponse> onlineCommands = new ArrayList<>();
+        Set<Integer> networkIds = new HashSet<>();
         for (ParsedResponse command : commands) {
+            if (NetworkDeliveries.accepts(command)) {
+                // Network-wide, whatever the "player must be online" flag says: the
+                // player does not have to be on this server (see NetworkDeliveries).
+                networkIds.add(command.commandId());
+                network.submit(command);
+                continue;
+            }
             if (command.commandType() == ParsedResponse.COMMAND_TYPE.ONLINE) {
                 onlineCommands.add(command);
                 continue;
@@ -121,6 +136,81 @@ public class CommandStorage {
             execute(command);
         }
         handleOnlineCommands(onlineCommands);
+        return networkIds;
+    }
+
+    public boolean isNetworkPending(int id) {
+        return network != null && network.isPending(id);
+    }
+
+    public void submitNetworkDelivery(ParsedResponse response) {
+        network.submit(response);
+    }
+
+    public void confirmNetworkDelivery(int id) {
+        network.confirm(id);
+    }
+
+    /**
+     * Called on every queue poll: re-runs unconfirmed network deliveries and, once,
+     * moves Cevher commands that an older build parked in savedCommands.json for
+     * "when the player joins this server" over to the network path.
+     */
+    public void networkTick() {
+        if (network == null || !NetworkDeliveries.protocolAvailable()) {
+            return;
+        }
+        if (!savedMigrated) {
+            savedMigrated = true;
+            migrateSaved();
+        }
+        network.retryDue();
+    }
+
+    private void migrateSaved() {
+        if (newCommands == null || !MineStoreCommon.version().requires(3, 2, 5)) {
+            return;
+        }
+        List<ParsedResponse> parked = new ArrayList<>();
+        for (Map.Entry<String, List<StoredCommand>> entry : newCommands.entrySet()) {
+            for (StoredCommand stored : entry.getValue()) {
+                ParsedResponse response = stored.toParsedResponse(entry.getKey());
+                if (NetworkDeliveries.accepts(response)) {
+                    parked.add(response);
+                }
+            }
+        }
+        if (parked.isEmpty()) {
+            return;
+        }
+        Set<Integer> ids = new HashSet<>();
+        for (ParsedResponse response : parked) {
+            ids.add(response.commandId());
+        }
+        // Same check the join path does: a purchase refunded while it was parked
+        // must not run.
+        plugin.webListener().checkCommands(ids).thenAccept(check -> {
+            if (!check.answered()) {
+                plugin.log("Could not check parked Cevher commands with the store, trying again next round: " + check.error());
+                savedMigrated = false;
+                return;
+            }
+            for (ParsedResponse response : parked) {
+                int id = response.commandId();
+                if (!check.validIds().contains(id) && check.rejectedIds().containsKey(id)) {
+                    plugin.log("Not running parked \"" + response.command() + "\" (id " + id + "), the store no longer has it: " + check.rejectedIds().get(id));
+                    removeNewCommand(StoredCommand.fromParsedResponse(response), response.username());
+                    continue;
+                }
+                plugin.log("Delivering parked command " + id + " for " + response.username() + " network-wide.");
+                network.submit(response);
+                removeNewCommand(StoredCommand.fromParsedResponse(response), response.username());
+            }
+        }).exceptionally(e -> {
+            plugin.debug(this.getClass(), e);
+            savedMigrated = false;
+            return null;
+        });
     }
 
     /**
@@ -231,6 +321,11 @@ public class CommandStorage {
         String command = parsedResponse.command();
         String username = parsedResponse.username();
         int requestId = parsedResponse.commandId();
+        if (requestId > 0 && NetworkDeliveries.handles(command) && NetworkDeliveries.protocolAvailable()) {
+            // Every path (network, legacy join path, parked copies) carries the key,
+            // so Cevher applies a purchase at most once whichever path runs it.
+            command = NetworkDeliveries.withKey(command, requestId);
+        }
         MineStoreExecuteEvent event = new MineStoreExecuteEvent(username, command, requestId);
         event.call();
         if (!event.isCancelled() &&ConfigKeys.COMMAND_EXEC_LOGGING.getValue()) {
@@ -242,5 +337,22 @@ public class CommandStorage {
     public void init() {
         commands = plugin.commandDumper().load();
         newCommands = plugin.newCommandDumper().load();
+        File folder = Registries.CONFIG_FILE.get().getParentFile();
+        network = new NetworkDeliveries(new File(folder, "networkDeliveries.json"), this::execute,
+                id -> plugin.webListener().postExecuted(String.valueOf(id)), plugin::log, System::currentTimeMillis,
+                ids -> plugin.webListener().checkCommands(ids).thenApply(check -> {
+                    if (!check.answered()) {
+                        return null;
+                    }
+                    Set<Integer> rejected = new HashSet<>();
+                    for (Integer id : ids) {
+                        if (!check.validIds().contains(id) && check.rejectedIds().containsKey(id)) {
+                            rejected.add(id);
+                        }
+                    }
+                    return rejected;
+                }));
+        network.load();
+        savedMigrated = false;
     }
 }

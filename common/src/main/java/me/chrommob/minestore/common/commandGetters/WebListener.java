@@ -16,6 +16,7 @@ import me.chrommob.minestore.api.web.WebRequest;
 import me.chrommob.minestore.common.MineStoreCommon;
 import me.chrommob.minestore.common.commandGetters.dataTypes.GsonReponse;
 import me.chrommob.minestore.common.commandGetters.dataTypes.PostResponse;
+import me.chrommob.minestore.common.commandHolder.NetworkDeliveries;
 import me.chrommob.minestore.common.commandHolder.type.CheckResponse;
 import me.chrommob.minestore.common.config.ConfigKeys;
 import me.chrommob.minestore.common.gui.payment.PaymentCreationResponse;
@@ -105,6 +106,7 @@ public class WebListener {
         this.plugin = plugin;
         mineStoreScheduledTask = SafeScheduledTask.wrap("weblistener", () -> {
             handleExecuted();
+            plugin.commandStorage().networkTick();
             plugin.debug(this.getClass(), "Running...");
             List<ParsedResponse> parsedResponses = fetchData();
             if (wasEmpty || parsedResponses.isEmpty()) {
@@ -114,7 +116,17 @@ public class WebListener {
             }
             Set<Integer> toPostDelivered = new HashSet<>();
             List<ParsedResponse> fresh = new ArrayList<>();
+            boolean held = false;
             for (ParsedResponse parsedResponse : parsedResponses) {
+                if (parsedResponse.type() == ParsedResponse.TYPE.COMMAND && parsedResponse.commandId() > 0
+                        && NetworkDeliveries.handles(parsedResponse.command())
+                        && !NetworkDeliveries.protocolAvailable()) {
+                    // Cevher is not up (startup, reload) or is too old to take a delivery
+                    // key. Do not touch the row at all: no "delivered", no run. The store
+                    // hands it out again on the next poll.
+                    held = true;
+                    continue;
+                }
                 if (ledger.firstTime(parsedResponse.commandId())) {
                     fresh.add(parsedResponse);
                     continue;
@@ -123,12 +135,25 @@ public class WebListener {
                 // reach the store. It already ran (or is waiting for its player),
                 // so only acknowledge it again.
                 toPostDelivered.add(parsedResponse.commandId());
+                if (NetworkDeliveries.accepts(parsedResponse)) {
+                    // Possibly never submitted (something threw after it was first seen).
+                    // Submitting is idempotent and Cevher applies a key at most once, so
+                    // hand it over instead of reporting it executed unseen.
+                    if (!plugin.commandStorage().isNetworkPending(parsedResponse.commandId())) {
+                        plugin.commandStorage().submitNetworkDelivery(parsedResponse);
+                    }
+                    continue;
+                }
                 if (parsedResponse.type() == ParsedResponse.TYPE.COMMAND
                         && parsedResponse.commandType() == ParsedResponse.COMMAND_TYPE.OFFLINE) {
                     postExecuted(String.valueOf(parsedResponse.commandId()));
                 }
                 plugin.log("Command " + parsedResponse.commandId() + " for " + parsedResponse.username()
                         + " was handed out again by the store; acknowledging it without running it twice.");
+            }
+            if (held) {
+                plugin.log("Cevher store commands are waiting: Cevher is not ready to take delivery keys yet (system property "
+                        + NetworkDeliveries.PROTOCOL_PROPERTY + " is not set).");
             }
             parsedResponses = fresh;
             List<ParsedResponse> commands = new ArrayList<>();
@@ -147,7 +172,9 @@ public class WebListener {
                         ? "true"
                         : "false"));
             }
-            plugin.commandStorage().listener(commands);
+            // Network deliveries are reported as executed when Cevher confirms them,
+            // not here (see NetworkDeliveries).
+            Set<Integer> awaitingConfirmation = plugin.commandStorage().listener(commands);
             for (ParsedResponse parsedResponse : parsedResponses) {
                 toPostDelivered.add(parsedResponse.commandId());
                 if (parsedResponse.type() == ParsedResponse.TYPE.AUTH) {
@@ -159,7 +186,8 @@ public class WebListener {
                     if (!MineStoreCommon.version().requires(arraySupportedSince)) {
                         postDelivered(String.valueOf(parsedResponse.commandId()));
                     }
-                    if (parsedResponse.commandType() == ParsedResponse.COMMAND_TYPE.OFFLINE) {
+                    if (parsedResponse.commandType() == ParsedResponse.COMMAND_TYPE.OFFLINE
+                            && !awaitingConfirmation.contains(parsedResponse.commandId())) {
                         postExecuted(String.valueOf(parsedResponse.commandId()));
                     }
                 } else {

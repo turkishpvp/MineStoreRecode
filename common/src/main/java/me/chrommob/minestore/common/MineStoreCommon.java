@@ -437,6 +437,7 @@ public class MineStoreCommon {
         annotationParser.parse(new SetupCommand(this));
         annotationParser.parse(new AddonCommand(this));
         annotationParser.parse(new VersionCommand());
+        annotationParser.parse(new DeliveredCommand(this));
     }
 
     private AnnotationParser<?> annotationParser;
